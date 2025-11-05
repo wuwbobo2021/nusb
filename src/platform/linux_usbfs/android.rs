@@ -395,7 +395,7 @@ impl PermissionRequest {
                 return Ok(());
             };
             inner.result.lock().unwrap().replace(granted);
-            inner.notify.notify();
+            inner.notify.take_notify_state().notify();
         }
         Ok(())
     }
