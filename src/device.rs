@@ -141,7 +141,7 @@ impl Device {
     /// the configuration reported as active by the OS.
     pub fn active_configuration(
         &self,
-    ) -> Result<ConfigurationDescriptor, ActiveConfigurationError> {
+    ) -> Result<ConfigurationDescriptor<'_>, ActiveConfigurationError> {
         let active = self.backend.active_configuration_value();
 
         self.configurations()
@@ -154,7 +154,7 @@ impl Device {
     /// Get an iterator returning information about each configuration of the device.
     ///
     /// This returns cached data and does not perform IO.
-    pub fn configurations(&self) -> impl Iterator<Item = ConfigurationDescriptor> {
+    pub fn configurations(&self) -> impl Iterator<Item = ConfigurationDescriptor<'_>> {
         self.backend.configuration_descriptors()
     }
 
@@ -485,7 +485,7 @@ impl Interface {
     /// Get the interface descriptors for the alternate settings of this interface.
     ///
     /// This returns cached data and does not perform IO.
-    pub fn descriptors(&self) -> impl Iterator<Item = InterfaceDescriptor> {
+    pub fn descriptors(&self) -> impl Iterator<Item = InterfaceDescriptor<'_>> {
         let active = self.backend.device.active_configuration_value();
 
         let configuration = self
@@ -501,7 +501,7 @@ impl Interface {
     }
 
     /// Get the interface descriptor for the current alternate setting.
-    pub fn descriptor(&self) -> Option<InterfaceDescriptor> {
+    pub fn descriptor(&self) -> Option<InterfaceDescriptor<'_>> {
         self.descriptors()
             .find(|i| i.alternate_setting() == self.get_alt_setting())
     }
@@ -736,6 +736,36 @@ impl<EpType: BulkOrInterrupt, Dir: EndpointDirection> Endpoint<EpType, Dir> {
     ///    would return 0).
     pub fn wait_next_complete(&mut self, timeout: Duration) -> Option<Completion> {
         self.backend.wait_next_complete(timeout)
+    }
+
+    /// Submit a single transfer and wait for it to complete.
+    ///
+    /// This is a convenience method that combines `submit` and
+    /// `wait_next_complete` for the common case where you submit a single
+    /// transfer and wait for it to complete with a timeout, cancelling it if
+    /// the timeout is reached. This assumes that no transfer is already
+    /// pending, and always consumes the transfer it submits such that it never
+    /// leaves a transfer pending.
+    ///
+    /// In the case of a timeout, the returned `Completion` will have a status
+    /// of `TransferError::Cancelled`.
+    ///
+    /// ## Panics
+    ///  * if any transfer is already pending.
+    pub fn transfer_blocking(&mut self, buf: Buffer, timeout: Duration) -> Completion {
+        assert!(self.pending() == 0, "a transfer is already pending");
+        self.submit(buf);
+        if let Some(completion) = self.wait_next_complete(timeout) {
+            return completion;
+        }
+
+        self.cancel_all();
+        loop {
+            if let Some(completion) = self.wait_next_complete(Duration::from_secs(1)) {
+                return completion;
+            }
+            log::warn!("cancelled transfer due to timeout, but it has not yet returned");
+        }
     }
 
     /// Clear the endpoint's halt / stall condition.
